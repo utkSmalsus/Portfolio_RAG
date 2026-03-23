@@ -25,7 +25,12 @@ const HF_EMBEDDING_MODEL =
 const HF_CHAT_MODEL_DEFAULT = "Qwen/Qwen2.5-7B-Instruct";
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+}));
 app.use(express.json());
 
 // Temp dir for uploaded PDFs
@@ -514,6 +519,62 @@ function getErrorMessage(err) {
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true });
+});
+
+app.get("/api/collection", async (req, res) => {
+  try {
+    const { QdrantClient } = await import("@qdrant/js-client-rest");
+    const client = new QdrantClient({
+      url: QDRANT_URL,
+      ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+    });
+    const exists = await client.collectionExists(COLLECTION_NAME);
+    if (!exists.exists) {
+      return res.json({ exists: false, points: 0, sources: [] });
+    }
+    const info = await client.getCollection(COLLECTION_NAME);
+    const pointCount = info.points_count ?? 0;
+
+    let sources = [];
+    try {
+      const scroll = await client.scroll(COLLECTION_NAME, { limit: 100, with_payload: true, with_vector: false });
+      const sourceSet = new Set();
+      for (const pt of scroll.points || []) {
+        const src = pt.payload?.metadata?.source || pt.payload?.source;
+        if (src) sourceSet.add(src);
+      }
+      sources = [...sourceSet];
+    } catch (_) {}
+
+    return res.json({ exists: true, points: pointCount, sources });
+  } catch (err) {
+    const code = err.cause?.code ?? err.cause?.errors?.[0]?.code;
+    if (code === "ECONNREFUSED" || (err.message && err.message.includes("fetch failed"))) {
+      return res.json({ exists: false, points: 0, sources: [], offline: true });
+    }
+    console.error(err);
+    return res.status(500).json({ error: err.message || "Failed to get collection info" });
+  }
+});
+
+app.delete("/api/collection", async (req, res) => {
+  try {
+    const { QdrantClient } = await import("@qdrant/js-client-rest");
+    const client = new QdrantClient({
+      url: QDRANT_URL,
+      ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+    });
+    const exists = await client.collectionExists(COLLECTION_NAME);
+    if (!exists.exists) {
+      return res.json({ success: true, message: "No collection to delete." });
+    }
+    await client.deleteCollection(COLLECTION_NAME);
+    vectorStore = null;
+    return res.json({ success: true, message: "Collection deleted successfully." });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ success: false, message: err.message || "Failed to delete collection" });
+  }
 });
 
 app.post("/api/index", (req, res, next) => {
