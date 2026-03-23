@@ -103,6 +103,41 @@ function isMetaQuery(q) {
   return META_QUERY_PATTERN.test(t) || /^(total|how many|count|list|number of|summarize|overview)\b/i.test(t) || /\b(total|all)\s+projects?\b/i.test(t);
 }
 
+const PORTFOLIO_KEYWORDS = /\b(project|sprint|cycle|task|P\d+|X\d+|C\d+|dashboard|notification|employee|HR|attendance|backup|search|portfolio|index|pdf|recommend|match|tag|assign)\b/i;
+
+function isPortfolioQuery(q) {
+  const t = q.trim();
+  if (isMetaQuery(t)) return true;
+  return PORTFOLIO_KEYWORDS.test(t);
+}
+
+async function getConversationalResponse(question) {
+  const chatHf = new HfInference(process.env.HUGGINGFACE_API_KEY);
+  const chatModel = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const chatArgs = {
+    model: chatModel,
+    messages: [
+      {
+        role: "system",
+        content: `You are a friendly and helpful portfolio assistant. Your main job is to help users find the best matching Project/Sprint/Cycle from their indexed portfolio data.
+
+For casual conversation (greetings, how are you, thanks, etc.) respond naturally and warmly, then gently remind the user that you can help them find projects from their portfolio data.
+
+For general knowledge questions, answer briefly using your own knowledge, but mention that your specialty is portfolio project matching.
+
+Keep responses concise (2-3 sentences max).`
+      },
+      { role: "user", content: question }
+    ],
+    max_tokens: 200,
+  };
+  if (process.env.HF_CHAT_PROVIDER) {
+    chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  }
+  const response = await chatHf.chatCompletion(chatArgs);
+  return getChatMessageContent(response.choices?.[0]?.message);
+}
+
 async function getRagAnswer(question) {
   const k = isMetaQuery(question) ? K_RETRIEVE_SUMMARY : K_RETRIEVE;
   const retriever = vectorStore.asRetriever({ k });
@@ -538,8 +573,13 @@ app.post("/api/chat", async (req, res) => {
     if (!question || typeof question !== "string") {
       return res.status(400).json({ error: "Missing or invalid 'question' in body" });
     }
+    const trimmed = question.trim();
+    if (!isPortfolioQuery(trimmed)) {
+      const answer = await getConversationalResponse(trimmed);
+      return res.json({ answer, recommendation: null });
+    }
     await initRag();
-    const result = await getRagAnswer(question.trim());
+    const result = await getRagAnswer(trimmed);
     const text = typeof result === "string" ? result : (result?.answer ?? result?.content ?? "");
     const recommendation = result?.recommendation ?? null;
     return res.json({ answer: text || "", recommendation });
