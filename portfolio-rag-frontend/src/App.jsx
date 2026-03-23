@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
 
-/** Same-origin `/api` (Vite proxy or Docker). Set VITE_API_URL if the UI is on another origin (e.g. http://localhost:3001). */
 const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
 const API_URL = API_BASE ? `${API_BASE}/api/chat` : '/api/chat'
 const INDEX_URL = API_BASE ? `${API_BASE}/api/index` : '/api/index'
+const COLLECTION_URL = API_BASE ? `${API_BASE}/api/collection` : '/api/collection'
 const THEME_KEY = 'rag-theme'
 
 export default function App() {
@@ -14,7 +14,10 @@ export default function App() {
   const [error, setError] = useState(null)
   const [indexing, setIndexing] = useState(false)
   const [indexResult, setIndexResult] = useState(null)
-  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light')
+  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'dark')
+  const [collection, setCollection] = useState(null)
+  const [deleting, setDeleting] = useState(false)
+  const [collectionLoading, setCollectionLoading] = useState(true)
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -35,6 +38,22 @@ export default function App() {
     }, 1000)
     return () => clearTimeout(timer)
   }, [])
+
+  const fetchCollection = useCallback(async () => {
+    setCollectionLoading(true)
+    try {
+      const res = await fetch(COLLECTION_URL)
+      if (res.ok) {
+        const data = await res.json()
+        setCollection(data)
+      }
+    } catch (_) {}
+    setCollectionLoading(false)
+  }, [])
+
+  useEffect(() => {
+    fetchCollection()
+  }, [fetchCollection])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -58,14 +77,12 @@ export default function App() {
         data = text ? JSON.parse(text) : {}
       } catch {
         const msg = !res.ok && res.status >= 502
-          ? "Server not reachable. In the rag-chat folder run: npm run server"
+          ? "Server not reachable."
           : (text || `Request failed: ${res.status}`)
         throw new Error(res.ok ? 'Invalid response from server' : msg)
       }
-
       if (!res.ok) {
-        const msg = data.error || (res.status >= 502 ? "Server not reachable. Run: npm run server" : `Request failed: ${res.status}`)
-        throw new Error(msg)
+        throw new Error(data.error || `Request failed: ${res.status}`)
       }
       const answerText = data.answer != null ? String(data.answer) : ""
       const recommendation = data.recommendation ?? null
@@ -73,7 +90,7 @@ export default function App() {
     } catch (err) {
       let msg = err?.message || 'Request failed'
       if (msg === 'Failed to fetch' || msg.includes('NetworkError')) {
-        msg = 'Cannot reach server. In the rag-chat folder run: npm run server'
+        msg = 'Cannot reach server. Make sure the backend is running.'
       }
       setError(msg)
       setMessages((m) => [...m, { role: 'assistant', content: null, error: msg }])
@@ -96,17 +113,11 @@ export default function App() {
       try {
         data = text ? JSON.parse(text) : {}
       } catch {
-        setIndexResult({
-          success: false,
-          message: text?.slice(0, 200) || `Request failed: ${res.status}`,
-        })
+        setIndexResult({ success: false, message: text?.slice(0, 200) || `Request failed: ${res.status}` })
         return
       }
       if (!res.ok) {
-        setIndexResult({
-          success: false,
-          message: data.message || data.error || `Request failed: ${res.status}`,
-        })
+        setIndexResult({ success: false, message: data.message || data.error || `Request failed: ${res.status}` })
         return
       }
       const success = data.success !== false
@@ -118,10 +129,11 @@ export default function App() {
         sources: data.sources,
         mode: data.mode,
       })
+      fetchCollection()
     } catch (err) {
       let msg = err?.message || 'Indexing failed'
       if (msg === 'Failed to fetch' || msg.includes('NetworkError')) {
-        msg = 'Cannot reach API. Start the RAG server on port 3001 (e.g. npm start in portfolio Rag server).'
+        msg = 'Cannot reach API. Make sure the backend is running.'
       }
       setIndexResult({ success: false, message: msg })
     } finally {
@@ -140,131 +152,174 @@ export default function App() {
       return
     }
     const formData = new FormData()
-    for (const f of list) {
-      formData.append('pdf', f)
-    }
+    for (const f of list) formData.append('pdf', f)
     await doIndex(formData)
     e.target.value = ''
   }
 
-  async function handleIndexDefault() {
-    await doIndex()
+  async function handleDeleteCollection() {
+    if (!confirm('Delete the entire indexed collection? This cannot be undone.')) return
+    setDeleting(true)
+    setIndexResult(null)
+    try {
+      const res = await fetch(COLLECTION_URL, { method: 'DELETE' })
+      const data = await res.json()
+      setIndexResult({ success: data.success, message: data.message })
+      fetchCollection()
+    } catch (err) {
+      setIndexResult({ success: false, message: err?.message || 'Delete failed' })
+    } finally {
+      setDeleting(false)
+    }
   }
+
+  const busy = loading || indexing || deleting
 
   return (
     <div className="app">
       <header className="header">
-        <div className="header-row">
-          <div>
-            <h1>Project Recommender RAG</h1>
-            <p>Describe a task and I will recommend the single best matching Project / Sprint / Cycle from your indexed data.</p>
+        <div className="header-top">
+          <div className="brand">
+            <h1>Portfolio RAG</h1>
+            <p className="subtitle">AI-powered project recommender from your indexed portfolio data</p>
           </div>
-          <div className="header-actions">
+          <button
+            type="button"
+            className="btn-icon btn-theme"
+            onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
+            title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+          >
+            {theme === 'light' ? '\u2600\uFE0F' : '\uD83C\uDF19'}
+          </button>
+        </div>
+
+        <div className="toolbar">
+          <div className="toolbar-actions">
+            <label className={`btn btn-primary ${busy ? 'disabled' : ''}`}>
+              <input
+                type="file"
+                accept="application/pdf"
+                multiple
+                onChange={handleIndex}
+                disabled={busy}
+                style={{ display: 'none' }}
+              />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              {indexing ? 'Indexing...' : 'Upload PDF'}
+            </label>
             <button
               type="button"
-              className="btn-theme"
-              onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
-              title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
-              aria-label="Toggle theme"
+              className="btn btn-secondary"
+              onClick={() => doIndex()}
+              disabled={busy}
+              title="Index default protfolioData.pdf from server"
             >
-              {theme === 'light' ? '☀️' : '🌙'}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              Index Default
             </button>
-            <label className="btn-index" title="Upload one or more PDFs; new files are added to the same Qdrant index">
-            <input
-              type="file"
-              accept="application/pdf"
-              multiple
-              onChange={handleIndex}
-              disabled={loading || indexing}
-              style={{ display: 'none' }}
-            />
-            {indexing ? 'Indexing…' : 'Upload PDF(s)'}
-          </label>
             <button
               type="button"
-              className="btn-index btn-index-default"
-              onClick={handleIndexDefault}
-              disabled={loading || indexing}
-              title="Index default protfolioData.pdf from server folder"
+              className="btn btn-danger"
+              onClick={handleDeleteCollection}
+              disabled={deleting}
+              title="Delete entire Qdrant collection"
             >
-              Index default
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              {deleting ? 'Deleting...' : 'Delete Collection'}
             </button>
           </div>
         </div>
-        <div className="header-info">
-          {indexResult && (
-            <p className={`index-result ${indexResult.success ? 'index-ok' : 'index-err'}`}>
-              {indexResult.message}
-              {indexResult.chunks != null && ` (${indexResult.chunks} chunks)`}
-              {indexResult.success && indexResult.sources?.length > 0 && (
-                <span className="index-sources"> — {indexResult.sources.join(', ')}</span>
-              )}
-            </p>
-          )}
-          <details className="guidance">
-            <summary>How this assistant decides (click to expand)</summary>
-            <div className="guidance-body">
-              <p><strong>Core objective:</strong> Map your task description to the <strong>single most relevant</strong> item (Project / Sprint / Cycle) from the retrieved context.</p>
-              <p><strong>Context rules:</strong> Uses only the retrieved items (k=5 for balanced recall). If nothing fits, it will say: "No relevant project found based on the given task."</p>
-              <p><strong>Structure (P / X / C):</strong> Project (broad), Sprint (more specific), Cycle (most specific). When relevance is similar, it prefers <strong>Cycle &gt; Sprint &gt; Project</strong>.</p>
-              <p><strong>Signals used:</strong> Title, Status, Priority, Team, Due Date and P/X/C level to decide which item best matches your task.</p>
-              <p><strong>Output format:</strong> Returns JSON with <code>best_match</code> (id, title, reason) and <code>alternatives</code>.</p>
-              <p><strong>Restrictions:</strong> It will not invent new items, change IDs/titles, or use knowledge outside the retrieved context.</p>
+
+        <div className={`collection-status ${collectionLoading ? 'collection-loading' : collection?.exists ? 'collection-active' : 'collection-empty'}`}>
+          <div className="collection-dot" />
+          {collectionLoading ? (
+            <span className="collection-label">Checking collection status...</span>
+          ) : collection?.exists ? (
+            <div className="collection-info">
+              <span className="collection-label">Indexed</span>
+              <span className="collection-detail">
+                {collection.points} chunks
+                {collection.sources?.length > 0 && (
+                  <> from <strong>{collection.sources.join(', ')}</strong></>
+                )}
+              </span>
             </div>
-          </details>
+          ) : (
+            <span className="collection-label">No data indexed yet. Upload a PDF or click Index Default to get started.</span>
+          )}
         </div>
+
+        {indexResult && (
+          <div className={`alert ${indexResult.success ? 'alert-success' : 'alert-error'}`}>
+            {indexResult.message}
+            {indexResult.chunks != null && ` (${indexResult.chunks} chunks)`}
+            {indexResult.success && indexResult.sources?.length > 0 && (
+              <span className="alert-detail"> — {indexResult.sources.join(', ')}</span>
+            )}
+            <button className="alert-close" onClick={() => setIndexResult(null)}>&times;</button>
+          </div>
+        )}
       </header>
 
       <main className="main">
         <div className="messages">
           {messages.length === 0 && !loading && (
             <div className="empty">
-              <p>Describe a task to get a PXC recommendation. For example:</p>
-              <ul>
-                <li>"What projects or skills are in the portfolio?"</li>
-                <li>"Summarize my experience or contact details."</li>
-              </ul>
+              <div className="empty-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              </div>
+              <p>Ask me anything about your portfolio projects</p>
+              <div className="empty-examples">
+                <span>"What projects are in the portfolio?"</span>
+                <span>"Summarize my experience"</span>
+              </div>
             </div>
           )}
           {messages.map((msg, i) => (
             <div key={i} className={`message message--${msg.role}`}>
-              <span className="message-label">{msg.role === 'user' ? 'You' : 'AI'}</span>
-              <div className="message-content">
-                {msg.error ? (
-                  <p className="message-error">{msg.error}</p>
-                ) : (
-                  <>
-                    {msg.recommendation?.best_match && (
-                      <div className="recommendation-card">
-                        <h4 className="rec-label">Best match</h4>
-                        <div className="rec-item rec-best">
-                          <span className="rec-id">{msg.recommendation.best_match.id ?? '—'}</span>
-                          <span className="rec-title">{msg.recommendation.best_match.title ?? '—'}</span>
-                          <p className="rec-reason">{msg.recommendation.best_match.reason}</p>
-                        </div>
-                        {msg.recommendation.alternatives?.length > 0 && (
-                          <div className="rec-alternatives">
-                            <span className="rec-alt-label">Alternatives:</span>
-                            <ul>
-                              {msg.recommendation.alternatives.map((id, j) => (
-                                <li key={j}>{id}</li>
-                              ))}
-                            </ul>
+              <div className="message-avatar">
+                {msg.role === 'user' ? 'U' : 'AI'}
+              </div>
+              <div className="message-body">
+                <div className="message-content">
+                  {msg.error ? (
+                    <p className="message-error">{msg.error}</p>
+                  ) : (
+                    <>
+                      {msg.recommendation?.best_match && (
+                        <div className="recommendation-card">
+                          <div className="rec-header">Best Match</div>
+                          <div className="rec-item">
+                            <span className="rec-id">{msg.recommendation.best_match.id ?? '—'}</span>
+                            <span className="rec-title">{msg.recommendation.best_match.title ?? '—'}</span>
                           </div>
-                        )}
-                      </div>
-                    )}
-                    <div className="message-text">{msg.content}</div>
-                  </>
-                )}
+                          {msg.recommendation.best_match.reason && (
+                            <p className="rec-reason">{msg.recommendation.best_match.reason}</p>
+                          )}
+                          {msg.recommendation.alternatives?.length > 0 && (
+                            <div className="rec-alternatives">
+                              <span className="rec-alt-label">Alternatives:</span>
+                              {msg.recommendation.alternatives.map((id, j) => (
+                                <span key={j} className="rec-alt-tag">{id}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <div className="message-text">{msg.content}</div>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           ))}
           {loading && (
             <div className="message message--assistant">
-              <span className="message-label">AI</span>
-              <div className="message-content typing">
-                <span></span><span></span><span></span>
+              <div className="message-avatar">AI</div>
+              <div className="message-body">
+                <div className="message-content typing">
+                  <span /><span /><span />
+                </div>
               </div>
             </div>
           )}
@@ -278,12 +333,12 @@ export default function App() {
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="e.g. Create notification system for task updates"
+              placeholder="Describe a task or ask a question..."
               disabled={loading}
               autoFocus
             />
             <button type="submit" disabled={loading || !input.trim()}>
-              Send
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             </button>
           </div>
         </form>
