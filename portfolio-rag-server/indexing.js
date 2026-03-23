@@ -165,12 +165,16 @@ export async function runIndexing(pdfPathOverride, options = {}) {
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (isMain) {
-  runIndexing(undefined, { replace: true })
-    .then((r) => {
-      console.log(r.message, "Chunks:", r.chunks, "Files:", r.sources?.join(", "));
-    })
-    .catch((err) => {
-      console.error(err);
-      process.exit(1);
-    });
+  console.log("Run indexing via the web UI (Index default or Upload PDF). This script is kept for manual CLI use only.");
+  console.log("Usage: node indexing.js --run");
+  if (process.argv.includes("--run")) {
+    runIndexing(undefined, { replace: true })
+      .then((r) => {
+        console.log(r.message, "Chunks:", r.chunks, "Files:", r.sources?.join(", "));
+      })
+      .catch((err) => {
+        console.error(err);
+        process.exit(1);
+      });
+  }
 }

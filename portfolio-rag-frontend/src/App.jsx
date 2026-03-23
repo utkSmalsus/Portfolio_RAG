@@ -26,6 +26,16 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setMessages([{
+        role: 'assistant',
+        content: 'Hi, I am your assistant for suggesting the best portfolio match for your task. Describe what you need and I will find the most relevant project for you!'
+      }])
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [])
+
   async function handleSubmit(e) {
     e.preventDefault()
     const question = input.trim()
@@ -207,7 +217,7 @@ export default function App() {
 
       <main className="main">
         <div className="messages">
-          {messages.length === 0 && (
+          {messages.length === 0 && !loading && (
             <div className="empty">
               <p>Describe a task to get a PXC recommendation. For example:</p>
               <ul>
