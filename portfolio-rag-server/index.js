@@ -500,7 +500,6 @@ app.post("/api/index", (req, res, next) => {
     const defaultPath = getPdfPath();
     if (fs.existsSync(defaultPath)) paths = [defaultPath];
   }
-  const replace = req.query.replace === "1" || req.query.replace === "true";
   try {
     if (!paths.length) {
       return res.status(400).json({
@@ -510,7 +509,7 @@ app.post("/api/index", (req, res, next) => {
       });
     }
     const { runIndexing } = await import("./indexing.js");
-    const result = await runIndexing(paths, { replace });
+    const result = await runIndexing(paths, { replace: true });
     vectorStore = null;
     return res.json(result);
   } catch (err) {
