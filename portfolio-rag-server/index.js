@@ -182,7 +182,7 @@ You are a STRICT decision + ranking system.
 ## INPUT
 -----------------------------------
 
-USER TASK:
+USER TASK:what is the best matching project/sprint/cycle for the following task:
 "${question}"
 
 RETRIEVED CONTEXT (k ≤ ${K_RETRIEVE}, usually ≤ 2):
