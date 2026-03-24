@@ -121,13 +121,12 @@ export default function App() {
         return
       }
       const success = data.success !== false
+      const cleanNames = (data.sources || []).map(s => s.replace(/^upload-\d+-[a-z0-9]+-/, ''))
       setIndexResult({
         success,
-        message: data.message || (success ? 'Indexing completed.' : 'Indexing failed.'),
-        chunks: data.chunks,
-        pdfCount: data.pdfCount,
-        sources: data.sources,
-        mode: data.mode,
+        message: success
+          ? `${cleanNames.join(', ')} source is added. Now ask your questions with AI!`
+          : (data.message || 'Indexing failed.'),
       })
       fetchCollection()
     } catch (err) {
@@ -236,13 +235,12 @@ export default function App() {
             <span className="collection-label">Checking collection status...</span>
           ) : collection?.exists ? (
             <div className="collection-info">
-              <span className="collection-label">Indexed</span>
-              <span className="collection-detail">
-                {collection.points} chunks
-                {collection.sources?.length > 0 && (
-                  <> from <strong>{collection.sources.join(', ')}</strong></>
-                )}
+              <span className="collection-label">
+                {collection.sources?.length > 0
+                  ? <><strong>{collection.sources.map(s => s.replace(/^upload-\d+-[a-z0-9]+-/, '')).join(', ')}</strong> is indexed</>
+                  : 'Data indexed'}
               </span>
+              <span className="collection-detail">{collection.points} chunks ready for questions</span>
             </div>
           ) : (
             <span className="collection-label">No data indexed yet. Upload a PDF or click Index Default to get started.</span>
@@ -252,10 +250,6 @@ export default function App() {
         {indexResult && (
           <div className={`alert ${indexResult.success ? 'alert-success' : 'alert-error'}`}>
             {indexResult.message}
-            {indexResult.chunks != null && ` (${indexResult.chunks} chunks)`}
-            {indexResult.success && indexResult.sources?.length > 0 && (
-              <span className="alert-detail"> — {indexResult.sources.join(', ')}</span>
-            )}
             <button className="alert-close" onClick={() => setIndexResult(null)}>&times;</button>
           </div>
         )}
@@ -333,11 +327,11 @@ export default function App() {
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Describe a task or ask a question..."
-              disabled={loading}
+              placeholder={indexing ? 'Indexing in progress, please wait...' : 'Describe a task or ask a question...'}
+              disabled={loading || indexing}
               autoFocus
             />
-            <button type="submit" disabled={loading || !input.trim()}>
+            <button type="submit" disabled={loading || indexing || !input.trim()}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             </button>
           </div>
