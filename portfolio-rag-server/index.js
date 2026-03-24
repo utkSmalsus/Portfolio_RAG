@@ -108,7 +108,7 @@ function isMetaQuery(q) {
   return META_QUERY_PATTERN.test(t) || /^(total|how many|count|list|number of|summarize|overview)\b/i.test(t) || /\b(total|all)\s+projects?\b/i.test(t);
 }
 
-const PORTFOLIO_KEYWORDS = /\b(project|sprint|cycle|task|P\d+|X\d+|C\d+|dashboard|notification|employee|HR|attendance|backup|search|portfolio|index|pdf|recommend|match|tag|assign)\b/i;
+const PORTFOLIO_KEYWORDS = /\b(project|sprint|cycle|task|P\d+|X\d+|C\d+|dashboard|notification|employee|HR|attendance|backup|search|portfolio|index|pdf|recommend|match|tag|assign|report|eod|bug|fix|feature|develop|build|create|implement|integrate|deploy|update|improve|design|test|api|module|component|system|page|screen|form|setup|configure|manage|automate|migrate|refactor|optimize)\b/i;
 
 function isPortfolioQuery(q) {
   const t = q.trim();
@@ -143,21 +143,22 @@ Keep responses concise (2-3 sentences max).`
   return getChatMessageContent(response.choices?.[0]?.message);
 }
 
+function expandQuery(userInput) {
+  return `User is logging a work item (e.g., EOD report, bug fix, development task).
+
+Task Description:
+"${userInput}"
+
+Interpret this as actual work done and map it to the most relevant project/sprint/cycle.`;
+}
+
 async function getRagAnswer(question) {
   const k = isMetaQuery(question) ? K_RETRIEVE_SUMMARY : K_RETRIEVE;
   const retriever = vectorStore.asRetriever({ k });
-  const searchQuery = isMetaQuery(question) ? "project portfolio" : question;
-  const relevantChunks = await retriever.invoke(searchQuery);
-  if (!relevantChunks || relevantChunks.length === 0) {
-    return {
-      answer: "No data found. Please index a PDF first using 'Upload PDF' or 'Index default'.",
-      recommendation: { best_match: { id: null, title: null, reason: "No matches in retrieved context." }, alternatives: [] },
-    };
-  }
-
-  const context = relevantChunks.map((doc) => doc.pageContent).join("\n\n");
 
   if (isMetaQuery(question)) {
+    const relevantChunks = await retriever.invoke("project portfolio");
+    const context = (relevantChunks || []).map((doc) => doc.pageContent).join("\n\n");
     const projectIds = [...new Set(context.match(/\bP\d+(?:-X\d+(?:-C\d+)?)?\b/g) || [])];
     const projectCount = projectIds.length;
     const answerText = projectCount > 0
@@ -169,11 +170,23 @@ async function getRagAnswer(question) {
     };
   }
 
+  const expandedQuery = expandQuery(question);
+  const relevantChunks = await retriever.invoke(expandedQuery);
+
+  if (!relevantChunks || relevantChunks.length === 0) {
+    return {
+      answer: "No data found. Please index a PDF first using 'Upload PDF' or 'Index default'.",
+      recommendation: { best_match: { id: null, title: null, reason: "No matches in retrieved context." }, alternatives: [] },
+    };
+  }
+
+  const context = relevantChunks.map((doc) => doc.pageContent).join("\n\n");
+
   const systemPrompt = `
 You are a high-precision PXC (Project / Sprint / Cycle) Tagging Engine.
 
 Your job:
-👉 Given a user task description, assign the MOST RELEVANT project ID(s) from the retrieved context.
+👉 Given a user's task or work description, find the MOST RELEVANT project ID(s) from the retrieved context that this task should be tagged to or associated with.
 
 You are NOT a chatbot.
 You are a STRICT decision + ranking system.
@@ -182,10 +195,10 @@ You are a STRICT decision + ranking system.
 ## INPUT
 -----------------------------------
 
-USER TASK:what is the best matching project/sprint/cycle for the following task:
-"${question}"
+USER TASK:
+${expandedQuery}
 
-RETRIEVED CONTEXT (k ≤ ${K_RETRIEVE}, usually ≤ 2):
+RETRIEVED CONTEXT (k ≤ ${K_RETRIEVE}):
 ${context}
 
 -----------------------------------
@@ -193,7 +206,7 @@ ${context}
 -----------------------------------
 
 Return:
-👉 Best matching ID (MANDATORY)
+👉 Best matching project/sprint/cycle ID that this task belongs to (MANDATORY)
 👉 Optional 1–2 alternative IDs (ONLY if strongly relevant)
 
 Focus:
@@ -208,6 +221,7 @@ Focus:
 - ONLY use IDs and Titles from the given context
 - DO NOT invent anything
 - DO NOT use external knowledge
+- Even for short/vague task descriptions (e.g. "eod report", "bug fix", "UI update"), try to find the closest matching project from context
 - If no strong match → return:
 
 {
