@@ -63,6 +63,10 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
+// Transcript RAG Router
+import transcriptRouter from "./transcript.js";
+app.use("/api/transcript", transcriptRouter);
+
 let embeddings;
 let vectorStore;
 let hf;
