@@ -17,6 +17,7 @@ dotenv.config();
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
 const COLLECTION_NAME = "portfolio-docs";
+const TRANSCRIPT_COLLECTION_NAME = "transcript-docs";
 
 /** Same default as indexing.js — keep in sync for collection compatibility */
 const HF_EMBEDDING_MODEL =
@@ -84,6 +85,350 @@ async function initRag() {
   hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
 }
 
+async function getStoreForCollection(collectionName) {
+  const e = new HuggingFaceInferenceEmbeddings({
+    apiKey: process.env.HUGGINGFACE_API_KEY,
+    model: HF_EMBEDDING_MODEL,
+  });
+  return QdrantVectorStore.fromExistingCollection(e, {
+    url: QDRANT_URL,
+    collectionName,
+    ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+  });
+}
+
+function isTaskCreationQuery(q) {
+  return /(create|make|generate|prepare|draft)\s+.*(task|tasks|action items?|tickets?)/i.test(q)
+    || /(action items?|convert.*tasks?|task list)/i.test(q);
+}
+
+function isTranscriptQuery(q) {
+  return /\b(transcript|meeting|call notes|minutes|action items?|summary|summarize|summarise)\b/i.test(q);
+}
+
+function extractFirstJsonObject(raw) {
+  const cleaned = String(raw || "").trim();
+  const deFenced = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const match = deFenced.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[0]);
+  } catch (_) {
+    return null;
+  }
+}
+
+function parseTaskCards(raw) {
+  const parsed = extractFirstJsonObject(raw);
+  if (!parsed || !Array.isArray(parsed.tasks)) return null;
+  try {
+    const tasks = parsed.tasks
+      .map((t) => ({
+        title: String(t?.title || "").trim(),
+        description: String(t?.description || "").trim(),
+        best_match: {
+          id: t?.best_match?.id ?? null,
+          title: t?.best_match?.title ?? null,
+          reason: String(t?.best_match?.reason || "").trim(),
+        },
+        alternatives: Array.isArray(t?.alternatives)
+          ? t.alternatives
+              .map((a) => ({
+                id: a?.id ?? null,
+                title: a?.title ?? null,
+                reason: String(a?.reason || "").trim(),
+              }))
+              .filter((a) => a.id || a.title)
+          : [],
+        needs_new_portfolio: Boolean(t?.needs_new_portfolio),
+        new_portfolio_suggestion: String(t?.new_portfolio_suggestion || "").trim(),
+      }))
+      .filter((t) => t.title && t.description);
+    if (!tasks.length) return null;
+    return { tasks };
+  } catch (_) {
+    return null;
+  }
+}
+
+function parseTaskListOnly(raw) {
+  const parsed = extractFirstJsonObject(raw);
+  if (!parsed || !Array.isArray(parsed.tasks)) return [];
+  return parsed.tasks
+    .map((t) => ({
+      title: String(t?.title || "").trim(),
+      description: String(t?.description || "").trim(),
+    }))
+    .filter((t) => t.title && t.description);
+}
+
+async function tagTaskWithPortfolio(task, portfolioStore) {
+  const query = `${task.title}\n${task.description}`;
+  const candidates = await portfolioStore.asRetriever({ k: 7 }).invoke(query);
+  const candidateContext = (candidates || []).map((d) => d.pageContent).join("\n\n").trim();
+
+  if (!candidateContext) {
+    return {
+      best_match: { id: null, title: "No suitable portfolio tag", reason: "No related portfolio context found." },
+      alternatives: [],
+      needs_new_portfolio: true,
+      new_portfolio_suggestion: `Create a new portfolio item for: ${task.title}`,
+    };
+  }
+
+  const model = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const prompt = `
+You are a strict portfolio tagging engine.
+Given one task and candidate portfolio context, return ONLY JSON:
+{
+  "best_match": { "id": "P... or null", "title": "exact title or null", "reason": "short reason", "confidence": "high|medium|low" },
+  "alternatives": [{ "id": "P...", "title": "exact title", "reason": "short reason" }],
+  "needs_new_portfolio": true or false,
+  "new_portfolio_suggestion": "short suggestion if needs_new_portfolio=true else empty string"
+}
+
+Rules:
+- Use only candidate context.
+- If no clearly relevant match, set best_match.id=null, alternatives=[] and needs_new_portfolio=true.
+- Return max 2 alternatives.
+- Prefer specific hierarchy: Cycle > Sprint > Project.
+
+Task:
+Title: ${task.title}
+Description: ${task.description}
+
+Candidate Portfolio Context:
+${candidateContext}
+`;
+  const chatArgs = {
+    model,
+    messages: [
+      { role: "system", content: "Return valid JSON only, no markdown." },
+      { role: "user", content: prompt },
+    ],
+    max_tokens: 420,
+    temperature: 0,
+  };
+  if (process.env.HF_CHAT_PROVIDER) chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  const response = await hf.chatCompletion(chatArgs);
+  const raw = getChatMessageContent(response.choices?.[0]?.message) || "";
+  const parsed = extractFirstJsonObject(raw);
+
+  const best = parsed?.best_match || {};
+  const confidence = String(best?.confidence || "").toLowerCase();
+  const lowConfidenceNoMatch = !best?.id || confidence === "low";
+  const alternatives = Array.isArray(parsed?.alternatives)
+    ? parsed.alternatives
+        .map((a) => ({ id: a?.id ?? null, title: a?.title ?? null, reason: String(a?.reason || "").trim() }))
+        .filter((a) => a.id || a.title)
+        .slice(0, 2)
+    : [];
+
+  if (lowConfidenceNoMatch) {
+    return {
+      best_match: {
+        id: null,
+        title: "No suitable portfolio tag",
+        reason: "No strong portfolio match for this transcript task.",
+      },
+      alternatives: [],
+      needs_new_portfolio: true,
+      new_portfolio_suggestion:
+        String(parsed?.new_portfolio_suggestion || "").trim() || `Create a new portfolio item for: ${task.title}`,
+    };
+  }
+
+  return {
+    best_match: {
+      id: best?.id ?? null,
+      title: best?.title ?? null,
+      reason: String(best?.reason || "").trim(),
+    },
+    alternatives,
+    needs_new_portfolio: Boolean(parsed?.needs_new_portfolio),
+    new_portfolio_suggestion: String(parsed?.new_portfolio_suggestion || "").trim(),
+  };
+}
+
+async function getTranscriptSummaryResponse(question) {
+  const transcriptStore = await getStoreForCollection(TRANSCRIPT_COLLECTION_NAME);
+  const transcriptDocs = await transcriptStore.asRetriever({ k: 8 }).invoke(question);
+  const transcriptContext = (transcriptDocs || []).map((d) => d.pageContent).join("\n\n").trim();
+
+  if (!transcriptContext) {
+    return {
+      answer: "I could not find transcript data yet. Please upload transcript files, then ask again.",
+      recommendation: null,
+    };
+  }
+
+  const systemPrompt = `
+You are a helpful assistant that answers using transcript context.
+
+Rules:
+- Use transcript context first.
+- If user asks for summary, produce concise summary and key action items.
+- If user asks a specific question, answer directly from context.
+- If context is partially relevant, answer with best effort and clearly mark uncertainty.
+- Keep answers practical and clear.
+
+Transcript Context:
+${transcriptContext}
+`;
+
+  const chatModel = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const chatArgs = {
+    model: chatModel,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: question },
+    ],
+    max_tokens: 700,
+    temperature: 0.2,
+  };
+  if (process.env.HF_CHAT_PROVIDER) chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  const response = await hf.chatCompletion(chatArgs);
+  return { answer: getChatMessageContent(response.choices?.[0]?.message) || "", recommendation: null };
+}
+
+async function getUnifiedTaskResponse(question) {
+  const transcriptStore = await getStoreForCollection(TRANSCRIPT_COLLECTION_NAME);
+  const portfolioStore = await getStoreForCollection(COLLECTION_NAME);
+
+  const transcriptDocs = await transcriptStore.asRetriever({ k: 10 }).invoke(question);
+  const portfolioDocs = await portfolioStore.asRetriever({ k: 14 }).invoke(question);
+
+  const transcriptContext = (transcriptDocs || []).map((d) => d.pageContent).join("\n\n");
+  const portfolioContext = (portfolioDocs || []).map((d) => d.pageContent).join("\n\n");
+
+  if (!transcriptContext.trim()) {
+    return {
+      answer: "No transcript data found. Please upload transcript files first.",
+      recommendation: null,
+    };
+  }
+  if (!portfolioContext.trim()) {
+    return {
+      answer: "No portfolio data found. Please upload portfolio PDF first.",
+      recommendation: null,
+    };
+  }
+
+  const systemPrompt = `
+You are an AI assistant that creates implementation tasks from transcript context.
+Use transcript context only for this step. Do NOT tag portfolio in this step.
+
+Return STRICT JSON only:
+{
+  "tasks": [
+    {
+      "title": "short task title",
+      "description": "clear implementation detail"
+    }
+  ]
+}
+
+Rules:
+- Return 4 to 6 tasks.
+- Prefer specific tags: Cycle > Sprint > Project.
+- best_match is mandatory for every task.
+- alternatives: 0 to 2 items with close semantic similarity.
+- Keep title concise (max 8 words).
+- Keep description actionable and short (max 22 words).
+- No markdown, no extra keys, no prose.
+
+Few-shot example:
+User: "Create tasks for transcript about attendance approval flow."
+Output:
+{
+  "tasks": [
+    {
+      "title": "Implement approval popup role handling",
+      "description": "Show read-only popup for members and actionable controls for approvers."
+    }
+  ]
+}
+
+Transcript Context:
+${transcriptContext}
+
+Portfolio Context:
+${portfolioContext}
+`;
+
+  const chatModel = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const chatArgs = {
+    model: chatModel,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: question },
+    ],
+    max_tokens: 900,
+    temperature: 0,
+  };
+  if (process.env.HF_CHAT_PROVIDER) chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+
+  const response = await hf.chatCompletion(chatArgs);
+  const raw = getChatMessageContent(response.choices?.[0]?.message) || "";
+  let baseTasks = parseTaskListOnly(raw);
+  if (baseTasks.length) {
+    const tasks = [];
+    for (const t of baseTasks) {
+      const tag = await tagTaskWithPortfolio(t, portfolioStore);
+      tasks.push({
+        title: t.title,
+        description: t.description,
+        best_match: tag.best_match,
+        alternatives: tag.alternatives,
+        needs_new_portfolio: tag.needs_new_portfolio,
+        new_portfolio_suggestion: tag.new_portfolio_suggestion,
+      });
+    }
+    return {
+      answer: `Created ${tasks.length} task card(s) with refined portfolio tagging.`,
+      recommendation: null,
+      tasks,
+    };
+  }
+  const retryArgs = {
+    model: chatModel,
+    messages: [
+      { role: "system", content: "Return valid minified JSON only with key tasks. Exactly 4 tasks. No markdown." },
+      { role: "user", content: `Question: ${question}\nTranscript:\n${transcriptContext}\nPortfolio:\n${portfolioContext}` },
+    ],
+    max_tokens: 700,
+    temperature: 0,
+  };
+  if (process.env.HF_CHAT_PROVIDER) retryArgs.provider = process.env.HF_CHAT_PROVIDER;
+  const retry = await hf.chatCompletion(retryArgs);
+  const retryRaw = getChatMessageContent(retry.choices?.[0]?.message) || "";
+  baseTasks = parseTaskListOnly(retryRaw);
+  if (baseTasks.length) {
+    const tasks = [];
+    for (const t of baseTasks) {
+      const tag = await tagTaskWithPortfolio(t, portfolioStore);
+      tasks.push({
+        title: t.title,
+        description: t.description,
+        best_match: tag.best_match,
+        alternatives: tag.alternatives,
+        needs_new_portfolio: tag.needs_new_portfolio,
+        new_portfolio_suggestion: tag.new_portfolio_suggestion,
+      });
+    }
+    return {
+      answer: `Created ${tasks.length} task card(s) with refined portfolio tagging.`,
+      recommendation: null,
+      tasks,
+    };
+  }
+  return {
+    answer: raw || "Could not generate task cards. Please retry with more specific transcript details.",
+    recommendation: null,
+    tasks: [],
+  };
+}
+
 /** Normalize HF chat message content (string or content-part array). */
 function getChatMessageContent(message) {
   if (!message) return "";
@@ -128,13 +473,12 @@ async function getConversationalResponse(question) {
     messages: [
       {
         role: "system",
-        content: `You are a friendly and helpful portfolio assistant. Your main job is to help users find the best matching Project/Sprint/Cycle from their indexed portfolio data.
+        content: `You are a friendly and helpful AI assistant.
 
-For casual conversation (greetings, how are you, thanks, etc.) respond naturally and warmly, then gently remind the user that you can help them find projects from their portfolio data.
-
-For general knowledge questions, answer briefly using your own knowledge, but mention that your specialty is portfolio project matching.
-
-Keep responses concise (2-3 sentences max).`
+Handle general questions naturally and directly.
+If users ask about portfolio/transcript workflows, help them with practical guidance.
+Do not force users into a fixed prompt pattern.
+Keep responses concise unless user asks for detail.`
       },
       { role: "user", content: question }
     ],
@@ -667,6 +1011,41 @@ app.post("/api/chat", async (req, res) => {
     const message = getErrorMessage(err);
     res.status(500).setHeader("Content-Type", "application/json");
     return res.send(JSON.stringify({ error: message }));
+  }
+});
+
+app.post("/api/unified/chat", async (req, res) => {
+  try {
+    if (!process.env.HUGGINGFACE_API_KEY) {
+      return res.status(500).json({
+        error: "HUGGINGFACE_API_KEY is not set. Add it to portfolio-rag-server/.env and restart.",
+      });
+    }
+    const { question } = req.body || {};
+    if (!question || typeof question !== "string") {
+      return res.status(400).json({ error: "Missing or invalid 'question' in body" });
+    }
+
+    await initRag();
+    const trimmed = question.trim();
+    const result = isTaskCreationQuery(trimmed)
+      ? await getUnifiedTaskResponse(trimmed)
+      : (isTranscriptQuery(trimmed)
+        ? await getTranscriptSummaryResponse(trimmed)
+        : (isPortfolioQuery(trimmed)
+          ? await getRagAnswer(trimmed)
+          : { answer: await getConversationalResponse(trimmed), recommendation: null }));
+
+    const answer = typeof result === "string" ? result : (result?.answer ?? "");
+    return res.json({
+      answer,
+      recommendation: result?.recommendation ?? null,
+      tasks: Array.isArray(result?.tasks) ? result.tasks : [],
+    });
+  } catch (err) {
+    console.error(err);
+    const message = getErrorMessage(err);
+    return res.status(500).json({ error: message || "Unified chat failed" });
   }
 });
 

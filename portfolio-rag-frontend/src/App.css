@@ -1,7 +1,7 @@
 .app {
   display: flex;
   flex-direction: column;
-  max-width: 760px;
+  max-width: 1180px;
   margin: 0 auto;
   min-height: 100vh;
   padding: 0 24px 24px;
@@ -266,6 +266,10 @@
   align-items: flex-start;
 }
 
+.message:not(.message--task-cards) .message-body {
+  max-width: 760px;
+}
+
 .message-avatar {
   width: 32px;
   height: 32px;
@@ -394,6 +398,132 @@
   border: 1px solid var(--rec-border);
 }
 
+/* ── Task Cards ── */
+.task-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.message--task-cards {
+  width: 100%;
+}
+
+.message--task-cards .message-body {
+  max-width: none;
+  width: 100%;
+}
+
+.message--task-cards .message-content {
+  width: 100%;
+}
+
+.message--assistant.message--task-cards .message-content {
+  padding: 10px 12px;
+}
+
+.task-card {
+  border: 1px solid var(--rec-border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--rec-bg);
+}
+
+.task-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+
+.task-card-index {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.task-card-head h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  color: var(--text);
+}
+
+.task-card-desc {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.task-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.task-match-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+
+.task-match-pill strong {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--accent);
+}
+
+.task-reason {
+  margin-top: 6px;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.task-new-portfolio-note {
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 8px;
+  padding: 7px 8px;
+}
+
+.task-alt-block {
+  margin-top: 10px;
+}
+
+.task-alt-list {
+  display: grid;
+  gap: 5px;
+}
+
+.task-alt-item {
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.task-no-alt {
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  opacity: 0.9;
+}
+
+.task-alt-id {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ── Typing Indicator ── */
 .typing {
   display: flex;
@@ -484,4 +614,5 @@
   .btn { padding: 7px 10px; font-size: 0.78rem; }
   .message-content { padding: 10px 14px; }
   .empty { padding: 32px 16px; }
+  .task-cards { grid-template-columns: 1fr; }
 }

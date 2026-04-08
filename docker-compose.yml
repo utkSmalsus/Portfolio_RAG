@@ -1,38 +1,38 @@
 services:
   qdrant:
     image: qdrant/qdrant:latest
+    container_name: qdrant
     ports:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+    restart: unless-stopped
 
   backend:
     build:
       context: ./portfolio-rag-server
-      dockerfile: Dockerfile
+    container_name: portfolio-rag-server
+    env_file:
+      - ./portfolio-rag-server/.env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - PORT=3001
     ports:
       - "3001:3001"
-    environment:
-      QDRANT_URL: http://qdrant:6333
-      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY}
-      HF_EMBEDDING_MODEL: ${HF_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
-      HF_CHAT_MODEL: ${HF_CHAT_MODEL:-Qwen/Qwen2.5-7B-Instruct}
-      HF_CHAT_PROVIDER: ${HF_CHAT_PROVIDER:-}
-      PORT: 3001
     depends_on:
       - qdrant
-    restart: on-failure
+    restart: unless-stopped
 
   frontend:
     build:
       context: ./portfolio-rag-frontend
-      dockerfile: Dockerfile
+    container_name: portfolio-rag-frontend
+    environment:
+      - VITE_PROXY_TARGET=http://backend:3001
     ports:
       - "5173:5173"
-    environment:
-      VITE_API_URL: http://localhost:3001
     depends_on:
       - backend
-
+    restart: unless-stopped
 volumes:
   qdrant_data: {}
