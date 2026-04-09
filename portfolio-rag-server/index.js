@@ -58,14 +58,28 @@ const upload = multer({
 });
 const MAX_PDFS = 25;
 
-// Serve React build in production (portfolio-rag-frontend/dist)
+// Serve React build only if dist exists (e.g. same-server deploy). Render+Vercel: no dist on API host.
 if (process.env.NODE_ENV === "production") {
   const frontendDist = path.join(rootDir, "portfolio-rag-frontend", "dist");
-  app.use(express.static(frontendDist));
-  app.get("*", (req, res, next) => {
-    if (req.path.startsWith("/api")) return next();
-    res.sendFile(path.join(frontendDist, "index.html"));
-  });
+  const indexHtml = path.join(frontendDist, "index.html");
+  if (fs.existsSync(indexHtml)) {
+    app.use(express.static(frontendDist));
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api")) return next();
+      res.sendFile(indexHtml);
+    });
+  } else {
+    console.log(
+      "portfolio-rag-frontend/dist not found — API only (frontend on Vercel or build+deploy dist next to this service).",
+    );
+    app.get("/", (_req, res) => {
+      res.json({
+        ok: true,
+        service: "portfolio-rag-api",
+        hint: "Use your Vercel URL for the UI; API routes are under /api/*",
+      });
+    });
+  }
 }
 
 app.use("/api/transcript", transcriptRouter);
