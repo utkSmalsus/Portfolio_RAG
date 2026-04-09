@@ -1,13 +1,14 @@
+import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import express from "express";
 import cors from "cors";
 import multer from "multer";
-import dotenv from "dotenv";
 import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
 import { HfInference } from "@huggingface/inference";
 import { QdrantVectorStore } from "@langchain/qdrant";
+import transcriptRouter from "./transcript.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, "..");
@@ -15,15 +16,18 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 dotenv.config({ path: path.join(rootDir, "..", "AI-Token", ".env") });
 dotenv.config();
 
-const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
+const QDRANT_URL = (process.env.QDRANT_URL || "http://localhost:6333").trim().replace(/\/+$/, "");
+const QDRANT_API_KEY = process.env.QDRANT_API_KEY?.trim();
+const HUGGINGFACE_API_KEY =
+  (process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || "").trim() || undefined;
+const HF_EMBEDDING_MODEL =
+  process.env.HF_EMBEDDING_MODEL?.trim() || "sentence-transformers/all-MiniLM-L6-v2";
+const HF_CHAT_MODEL_DEFAULT = "Qwen/Qwen2.5-7B-Instruct";
+const HF_CHAT_MODEL = process.env.HF_CHAT_MODEL?.trim() || HF_CHAT_MODEL_DEFAULT;
+const HF_CHAT_PROVIDER = process.env.HF_CHAT_PROVIDER?.trim();
+
 const COLLECTION_NAME = "portfolio-docs";
 const TRANSCRIPT_COLLECTION_NAME = "transcript-docs";
-
-/** Same default as indexing.js — keep in sync for collection compatibility */
-const HF_EMBEDDING_MODEL =
-  process.env.HF_EMBEDDING_MODEL || "sentence-transformers/all-MiniLM-L6-v2";
-/** Mistral 7B often fails on free Inference routing; override via HF_CHAT_MODEL in .env */
-const HF_CHAT_MODEL_DEFAULT = "Qwen/Qwen2.5-7B-Instruct";
 
 const app = express();
 app.use(cors({
@@ -64,8 +68,6 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-// Transcript RAG Router
-import transcriptRouter from "./transcript.js";
 app.use("/api/transcript", transcriptRouter);
 
 let embeddings;
@@ -74,26 +76,26 @@ let hf;
 
 async function initRag() {
   embeddings = new HuggingFaceInferenceEmbeddings({
-    apiKey: process.env.HUGGINGFACE_API_KEY,
+    apiKey: HUGGINGFACE_API_KEY,
     model: HF_EMBEDDING_MODEL,
   });
   vectorStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
     url: QDRANT_URL,
     collectionName: COLLECTION_NAME,
-    ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+    ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
   });
-  hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
+  hf = new HfInference(HUGGINGFACE_API_KEY);
 }
 
 async function getStoreForCollection(collectionName) {
   const e = new HuggingFaceInferenceEmbeddings({
-    apiKey: process.env.HUGGINGFACE_API_KEY,
+    apiKey: HUGGINGFACE_API_KEY,
     model: HF_EMBEDDING_MODEL,
   });
   return QdrantVectorStore.fromExistingCollection(e, {
     url: QDRANT_URL,
     collectionName,
-    ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+    ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
   });
 }
 
@@ -176,7 +178,7 @@ async function tagTaskWithPortfolio(task, portfolioStore) {
     };
   }
 
-  const model = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const model = HF_CHAT_MODEL;
   const prompt = `
 You are a strict portfolio tagging engine.
 Given one task and candidate portfolio context, return ONLY JSON:
@@ -209,7 +211,7 @@ ${candidateContext}
     max_tokens: 420,
     temperature: 0,
   };
-  if (process.env.HF_CHAT_PROVIDER) chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  if (HF_CHAT_PROVIDER) chatArgs.provider = HF_CHAT_PROVIDER;
   const response = await hf.chatCompletion(chatArgs);
   const raw = getChatMessageContent(response.choices?.[0]?.message) || "";
   const parsed = extractFirstJsonObject(raw);
@@ -276,7 +278,7 @@ Transcript Context:
 ${transcriptContext}
 `;
 
-  const chatModel = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const chatModel = HF_CHAT_MODEL;
   const chatArgs = {
     model: chatModel,
     messages: [
@@ -286,7 +288,7 @@ ${transcriptContext}
     max_tokens: 700,
     temperature: 0.2,
   };
-  if (process.env.HF_CHAT_PROVIDER) chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  if (HF_CHAT_PROVIDER) chatArgs.provider = HF_CHAT_PROVIDER;
   const response = await hf.chatCompletion(chatArgs);
   return { answer: getChatMessageContent(response.choices?.[0]?.message) || "", recommendation: null };
 }
@@ -356,7 +358,7 @@ Portfolio Context:
 ${portfolioContext}
 `;
 
-  const chatModel = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const chatModel = HF_CHAT_MODEL;
   const chatArgs = {
     model: chatModel,
     messages: [
@@ -366,7 +368,7 @@ ${portfolioContext}
     max_tokens: 900,
     temperature: 0,
   };
-  if (process.env.HF_CHAT_PROVIDER) chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  if (HF_CHAT_PROVIDER) chatArgs.provider = HF_CHAT_PROVIDER;
 
   const response = await hf.chatCompletion(chatArgs);
   const raw = getChatMessageContent(response.choices?.[0]?.message) || "";
@@ -399,7 +401,7 @@ ${portfolioContext}
     max_tokens: 700,
     temperature: 0,
   };
-  if (process.env.HF_CHAT_PROVIDER) retryArgs.provider = process.env.HF_CHAT_PROVIDER;
+  if (HF_CHAT_PROVIDER) retryArgs.provider = HF_CHAT_PROVIDER;
   const retry = await hf.chatCompletion(retryArgs);
   const retryRaw = getChatMessageContent(retry.choices?.[0]?.message) || "";
   baseTasks = parseTaskListOnly(retryRaw);
@@ -466,8 +468,8 @@ function isPortfolioQuery(q) {
 }
 
 async function getConversationalResponse(question) {
-  const chatHf = new HfInference(process.env.HUGGINGFACE_API_KEY);
-  const chatModel = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const chatHf = new HfInference(HUGGINGFACE_API_KEY);
+  const chatModel = HF_CHAT_MODEL;
   const chatArgs = {
     model: chatModel,
     messages: [
@@ -484,8 +486,8 @@ Keep responses concise unless user asks for detail.`
     ],
     max_tokens: 200,
   };
-  if (process.env.HF_CHAT_PROVIDER) {
-    chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  if (HF_CHAT_PROVIDER) {
+    chatArgs.provider = HF_CHAT_PROVIDER;
   }
   const response = await chatHf.chatCompletion(chatArgs);
   return getChatMessageContent(response.choices?.[0]?.message);
@@ -763,16 +765,14 @@ Always:
 You are a tagging engine, not a generator.
 `;
 
-
-
-const chatModel = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const chatModel = HF_CHAT_MODEL;
   const chatArgs = {
     model: chatModel,
     messages: [{ role: "user", content: systemPrompt }],
     max_tokens: 300,
   };
-  if (process.env.HF_CHAT_PROVIDER) {
-    chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  if (HF_CHAT_PROVIDER) {
+    chatArgs.provider = HF_CHAT_PROVIDER;
   }
   const response = await hf.chatCompletion(chatArgs);
 
@@ -880,7 +880,19 @@ function getErrorMessage(err) {
 }
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true });
+  let qHost = QDRANT_URL;
+  try {
+    qHost = new URL(QDRANT_URL).hostname;
+  } catch {
+    /* keep */
+  }
+  res.json({
+    ok: true,
+    qdrantHost: qHost,
+    qdrantApiKeySet: Boolean(QDRANT_API_KEY),
+    huggingFaceKeySet: Boolean(HUGGINGFACE_API_KEY),
+    chatModel: HF_CHAT_MODEL,
+  });
 });
 
 app.get("/api/collection", async (req, res) => {
@@ -888,7 +900,7 @@ app.get("/api/collection", async (req, res) => {
     const { QdrantClient } = await import("@qdrant/js-client-rest");
     const client = new QdrantClient({
       url: QDRANT_URL,
-      ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+      ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
     });
     const exists = await client.collectionExists(COLLECTION_NAME);
     if (!exists.exists) {
@@ -924,7 +936,7 @@ app.delete("/api/collection", async (req, res) => {
     const { QdrantClient } = await import("@qdrant/js-client-rest");
     const client = new QdrantClient({
       url: QDRANT_URL,
-      ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+      ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
     });
     const exists = await client.collectionExists(COLLECTION_NAME);
     if (!exists.exists) {
@@ -987,9 +999,9 @@ app.post("/api/index", (req, res, next) => {
 
 app.post("/api/chat", async (req, res) => {
   try {
-    if (!process.env.HUGGINGFACE_API_KEY) {
+    if (!HUGGINGFACE_API_KEY) {
       return res.status(500).json({
-        error: "HUGGINGFACE_API_KEY is not set. Add it to portfolio Rag server/.env and restart the server.",
+        error: "HUGGINGFACE_API_KEY is not set. Add it in Render Environment (or portfolio-rag-server/.env locally).",
       });
     }
     const { question } = req.body || {};
@@ -1016,9 +1028,9 @@ app.post("/api/chat", async (req, res) => {
 
 app.post("/api/unified/chat", async (req, res) => {
   try {
-    if (!process.env.HUGGINGFACE_API_KEY) {
+    if (!HUGGINGFACE_API_KEY) {
       return res.status(500).json({
-        error: "HUGGINGFACE_API_KEY is not set. Add it to portfolio-rag-server/.env and restart.",
+        error: "HUGGINGFACE_API_KEY is not set. Add it in Render Environment (or portfolio-rag-server/.env locally).",
       });
     }
     const { question } = req.body || {};
@@ -1053,7 +1065,14 @@ const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
   console.log(`RAG API at http://localhost:${PORT}`);
-  console.log("Qdrant will be connected on first chat request (must be running on port 6333).");
+  let qHost = QDRANT_URL;
+  try {
+    qHost = new URL(QDRANT_URL).hostname;
+  } catch {
+    /* keep */
+  }
+  console.log(`Qdrant: ${qHost}${QDRANT_API_KEY ? " (API key set)" : ""}`);
+  console.log(`Hugging Face: ${HUGGINGFACE_API_KEY ? "API key set" : "MISSING"}`);
+  console.log(`Chat model: ${HF_CHAT_MODEL}`);
   console.log(`Embedding model: ${HF_EMBEDDING_MODEL}`);
-  console.log(`Chat model: ${process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT}`);
 });

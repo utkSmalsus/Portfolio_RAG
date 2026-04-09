@@ -1,3 +1,4 @@
+import dotenv from "dotenv";
 import path from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
@@ -5,7 +6,6 @@ import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
 import { QdrantVectorStore } from "@langchain/qdrant";
 import { QdrantClient } from "@qdrant/js-client-rest";
-import dotenv from "dotenv";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, "..");
@@ -13,15 +13,18 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 dotenv.config({ path: path.join(rootDir, "..", "AI-Token", ".env") });
 dotenv.config();
 
-const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
-const COLLECTION_NAME = "portfolio-docs";
+const QDRANT_URL = (process.env.QDRANT_URL || "http://localhost:6333").trim().replace(/\/+$/, "");
+const QDRANT_API_KEY = process.env.QDRANT_API_KEY?.trim();
+const HUGGINGFACE_API_KEY =
+  (process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || "").trim() || undefined;
 const HF_EMBEDDING_MODEL =
-  process.env.HF_EMBEDDING_MODEL || "sentence-transformers/all-MiniLM-L6-v2";
+  process.env.HF_EMBEDDING_MODEL?.trim() || "sentence-transformers/all-MiniLM-L6-v2";
+const COLLECTION_NAME = "portfolio-docs";
 
 function getQdrantClient() {
   return new QdrantClient({
     url: QDRANT_URL,
-    ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+    ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
   });
 }
 
@@ -80,7 +83,7 @@ function qdrantStoreConfig() {
   return {
     url: QDRANT_URL,
     collectionName: COLLECTION_NAME,
-    ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+    ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
   };
 }
 
@@ -116,8 +119,8 @@ export async function runIndexing(pdfPathOverride, options = {}) {
     }
   }
 
-  if (!process.env.HUGGINGFACE_API_KEY) {
-    throw new Error("HUGGINGFACE_API_KEY is not set in .env");
+  if (!HUGGINGFACE_API_KEY) {
+    throw new Error("HUGGINGFACE_API_KEY is not set in .env (or host environment)");
   }
 
   const sources = paths.map((p) => path.basename(p));
@@ -125,7 +128,7 @@ export async function runIndexing(pdfPathOverride, options = {}) {
   if (!docs.length) throw new Error("No documents loaded from PDF(s)");
 
   const embeddings = new HuggingFaceInferenceEmbeddings({
-    apiKey: process.env.HUGGINGFACE_API_KEY,
+    apiKey: HUGGINGFACE_API_KEY,
     model: HF_EMBEDDING_MODEL,
   });
 

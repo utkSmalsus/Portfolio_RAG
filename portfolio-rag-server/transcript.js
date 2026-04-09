@@ -1,3 +1,4 @@
+import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -11,12 +12,19 @@ import { DocxLoader } from "@langchain/community/document_loaders/fs/docx";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, "..");
+dotenv.config({ path: path.join(__dirname, ".env") });
+dotenv.config({ path: path.join(rootDir, "..", "AI-Token", ".env") });
+dotenv.config();
 
-const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
+const QDRANT_URL = (process.env.QDRANT_URL || "http://localhost:6333").trim().replace(/\/+$/, "");
+const QDRANT_API_KEY = process.env.QDRANT_API_KEY?.trim();
+const HF_EMBEDDING_MODEL =
+  process.env.HF_EMBEDDING_MODEL?.trim() || "sentence-transformers/all-MiniLM-L6-v2";
+const HF_CHAT_MODEL_DEFAULT = "Qwen/Qwen2.5-7B-Instruct";
+const HF_CHAT_MODEL = process.env.HF_CHAT_MODEL?.trim() || HF_CHAT_MODEL_DEFAULT;
+const HF_CHAT_PROVIDER = process.env.HF_CHAT_PROVIDER?.trim();
 const COLLECTION_NAME = "transcript-docs";
 const FEEDBACK_COLLECTION = "transcript-feedback";
-const HF_EMBEDDING_MODEL = process.env.HF_EMBEDDING_MODEL || "sentence-transformers/all-MiniLM-L6-v2";
-const HF_CHAT_MODEL_DEFAULT = "Qwen/Qwen2.5-7B-Instruct";
 
 const router = express.Router();
 
@@ -46,7 +54,13 @@ let vectorStore;
 let hf;
 
 function getApiKey() {
-  return process.env.TRANSCRIPT_HF_API_KEY || process.env.HUGGINGFACE_API_KEY;
+  return (
+    (process.env.TRANSCRIPT_HF_API_KEY ||
+      process.env.HUGGINGFACE_API_KEY ||
+      process.env.HF_TOKEN ||
+      ""
+    ).trim() || undefined
+  );
 }
 
 async function initRag() {
@@ -57,7 +71,7 @@ async function initRag() {
   vectorStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
     url: QDRANT_URL,
     collectionName: COLLECTION_NAME,
-    ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+    ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
   });
   hf = new HfInference(getApiKey());
 }
@@ -101,6 +115,7 @@ async function getRagAnswer(question) {
     const feedbackStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
       url: QDRANT_URL,
       collectionName: FEEDBACK_COLLECTION,
+      ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
     });
     const pastCorrections = await feedbackStore.asRetriever({ k: 2 }).invoke(question);
     if (pastCorrections.length > 0) {
@@ -159,7 +174,7 @@ Consolidated Action Items
 -----------------------------------
 `;
 
-  const chatModel = process.env.HF_CHAT_MODEL || HF_CHAT_MODEL_DEFAULT;
+  const chatModel = HF_CHAT_MODEL;
   const chatArgs = {
     model: chatModel,
     messages: [
@@ -175,8 +190,8 @@ Consolidated Action Items
     max_tokens: 1500,
     temperature: 0
   };
-  if (process.env.HF_CHAT_PROVIDER) {
-    chatArgs.provider = process.env.HF_CHAT_PROVIDER;
+  if (HF_CHAT_PROVIDER) {
+    chatArgs.provider = HF_CHAT_PROVIDER;
   }
   const response = await hf.chatCompletion(chatArgs);
   const raw = getChatMessageContent(response.choices?.[0]?.message);
@@ -199,7 +214,7 @@ router.get("/collection", async (req, res) => {
     const { QdrantClient } = await import("@qdrant/js-client-rest");
     const client = new QdrantClient({
       url: QDRANT_URL,
-      ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+      ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
     });
     const exists = await client.collectionExists(COLLECTION_NAME);
     if (!exists.exists) {
@@ -235,7 +250,7 @@ router.delete("/collection", async (req, res) => {
     const { QdrantClient } = await import("@qdrant/js-client-rest");
     const client = new QdrantClient({
       url: QDRANT_URL,
-      ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+      ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
     });
     const exists = await client.collectionExists(COLLECTION_NAME);
     if (!exists.exists) {
@@ -278,7 +293,7 @@ router.post("/index", (req, res, next) => {
     const { QdrantClient } = await import("@qdrant/js-client-rest");
     const qdrantClient = new QdrantClient({
       url: QDRANT_URL,
-      ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+      ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
     });
 
     // Check if collection exists
@@ -315,7 +330,7 @@ router.post("/index", (req, res, next) => {
     const store = await QdrantVectorStore.fromExistingCollection(embeddingsInstance, {
       url: QDRANT_URL,
       collectionName: COLLECTION_NAME,
-      ...(process.env.QDRANT_API_KEY ? { apiKey: process.env.QDRANT_API_KEY } : {}),
+      ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
     });
 
     await store.addDocuments(docs);
@@ -377,7 +392,10 @@ router.post("/feedback", async (req, res) => {
     // Only store corrections for learning
     if (!isPositive && correction) {
       const { QdrantClient } = await import("@qdrant/js-client-rest");
-      const client = new QdrantClient({ url: QDRANT_URL });
+      const client = new QdrantClient({
+        url: QDRANT_URL,
+        ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
+      });
       
       const exists = await client.collectionExists(FEEDBACK_COLLECTION);
       if (!exists.exists) {
@@ -393,6 +411,7 @@ router.post("/feedback", async (req, res) => {
       }), {
         url: QDRANT_URL,
         collectionName: FEEDBACK_COLLECTION,
+        ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
       });
 
       await feedbackStore.addDocuments([{
