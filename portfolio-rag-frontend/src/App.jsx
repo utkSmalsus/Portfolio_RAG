@@ -24,6 +24,7 @@ export default function App() {
   const [transcriptCollection, setTranscriptCollection] = useState(null)
   const [collectionLoading, setCollectionLoading] = useState(true)
   const [deleting, setDeleting] = useState(false)
+  const [activeUploadType, setActiveUploadType] = useState(null)
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -74,7 +75,7 @@ export default function App() {
       const res = await fetch(URLS.unifiedChat, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, mode: activeUploadType }),
       })
       const text = await res.text()
       let data = {}
@@ -150,6 +151,7 @@ export default function App() {
   async function handleIndex(e, type) {
     const files = e?.target?.files
     if (!files?.length) return
+    setActiveUploadType(type)
     const list = Array.from(files)
     const nonValid = list.find((f) => {
       if (type === 'portfolio') {
@@ -209,7 +211,10 @@ export default function App() {
 
         <div className="toolbar">
           <div className="toolbar-actions">
-            <label className={`btn btn-primary ${busy ? 'disabled' : ''}`}>
+            <label
+              className={`btn ${activeUploadType === 'portfolio' ? 'btn-primary' : 'btn-secondary'} ${busy ? 'disabled' : ''}`}
+              onClick={() => setActiveUploadType('portfolio')}
+            >
               <input
                 type="file"
                 accept="application/pdf"
@@ -221,7 +226,10 @@ export default function App() {
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               {indexing ? 'Indexing...' : 'Upload Portfolio PDF'}
             </label>
-            <label className={`btn btn-secondary ${busy ? 'disabled' : ''}`}>
+            <label
+              className={`btn ${activeUploadType === 'transcript' ? 'btn-primary' : 'btn-secondary'} ${busy ? 'disabled' : ''}`}
+              onClick={() => setActiveUploadType('transcript')}
+            >
               <input
                 type="file"
                 accept="application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
