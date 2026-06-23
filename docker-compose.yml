@@ -1,3 +1,9 @@
+# Pull pre-built images:  docker compose pull && docker compose up -d
+# Build locally instead:  docker compose up --build -d
+#
+# Images are published to GHCR on every push to main.
+# Make packages public once in GitHub: Packages -> package -> Package settings -> Change visibility.
+
 services:
   qdrant:
     image: qdrant/qdrant:latest
@@ -9,6 +15,7 @@ services:
     restart: unless-stopped
 
   backend:
+    image: ghcr.io/utksmalsus/portfolio-rag-server:latest
     build:
       context: ./portfolio-rag-server
     container_name: portfolio-rag-server
@@ -24,6 +31,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    image: ghcr.io/utksmalsus/portfolio-rag-frontend:latest
     build:
       context: ./portfolio-rag-frontend
     container_name: portfolio-rag-frontend
